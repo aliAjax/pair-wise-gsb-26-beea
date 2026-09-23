@@ -1,157 +1,107 @@
+import { useState } from "react";
 import "./styles.css";
-
-const project = {
-  "id": "hxwl-12",
-  "port": 5112,
-  "title": "心理咨询个案记录",
-  "subtitle": "会谈时间线、风险等级与干预目标记录",
-  "stack": "React + Vite + TypeScript + CSS",
-  "theme": [
-    "#7c3aed",
-    "#0f766e",
-    "#f59e0b"
-  ],
-  "domain": "心理咨询",
-  "users": [
-    "咨询师",
-    "督导",
-    "机构管理员"
-  ],
-  "metrics": [
-    "活跃个案",
-    "高风险关注",
-    "本周会谈",
-    "目标推进"
-  ],
-  "filters": [
-    "焦虑",
-    "亲密关系",
-    "亲子",
-    "职业压力"
-  ],
-  "fields": [
-    "来访者代号",
-    "咨询主题",
-    "会谈日期",
-    "主要困扰",
-    "情绪状态",
-    "干预方法",
-    "下次目标"
-  ],
-  "records": [
-    [
-      "C-042",
-      "焦虑",
-      "中风险",
-      "睡眠改善，练习呼吸放松"
-    ],
-    [
-      "C-119",
-      "亲密关系",
-      "稳定",
-      "识别沟通中的回避模式"
-    ],
-    [
-      "C-203",
-      "职业压力",
-      "关注",
-      "设定下周边界练习"
-    ]
-  ]
-};
-
-const statusColors = ["status-ok", "status-watch", "status-danger"];
-
-function MetricCard({ label, value, index }: { label: string; value: string; index: number }) {
-  return (
-    <article className="metric-card">
-      <span>{label}</span>
-      <strong>{value}</strong>
-      <i className={statusColors[index % statusColors.length]} />
-    </article>
-  );
-}
+import { project } from "./data/project";
+import { useLedger, useNowTick } from "./state/useLedger";
+import { MetricsBar } from "./ui/MetricsBar";
+import { CaseList } from "./ui/CaseList";
+import { CaseDetail } from "./ui/CaseDetail";
+import { exportLedger } from "./storage/ledgerStore";
 
 function App() {
-  const values = project.metrics.map((metric: string, index: number) => {
-    const base = [84, 12, 31, 7][index % 4];
-    return String(base + index * 3);
-  });
+  const {
+    ledger,
+    error,
+    loadError,
+    createCase,
+    createSession,
+    logAttempt,
+    approveDowngrade,
+    persistSafetyPlan,
+    close,
+    reset,
+    dismissError,
+  } = useLedger();
+  const nowIso = useNowTick();
+  const [selectedId, setSelectedId] = useState<string | null>(
+    () => ledger.cases[0]?.id ?? null
+  );
 
   return (
     <main className="app-shell">
       <section className="hero">
         <div>
-          <p className="eyebrow">{project.id} · port {project.port}</p>
+          <p className="eyebrow">
+            {project.id} · port {project.port}
+          </p>
           <h1>{project.title}</h1>
           <p className="subtitle">{project.subtitle}</p>
+          <p className="storage-note">{project.storageNote}</p>
         </div>
         <div className="stack-card">
           <span>技术栈</span>
           <strong>{project.stack}</strong>
+          <span>分层：资料 / 判断 / 本地保存 / 页面</span>
+          <div className="btn-row">
+            <button onClick={() => exportLedger(ledger)}>导出台账</button>
+            <button
+              onClick={() => {
+                if (window.confirm("将清空本机数据并恢复为示例台账，确定吗？")) {
+                  reset();
+                  setSelectedId(null);
+                }
+              }}
+            >
+              恢复示例数据
+            </button>
+          </div>
         </div>
       </section>
 
-      <section className="metrics-grid">
-        {project.metrics.map((metric: string, index: number) => (
-          <MetricCard key={metric} label={metric} value={values[index]} index={index} />
-        ))}
-      </section>
-
-      <section className="workspace">
-        <aside className="panel narrow">
-          <h2>角色</h2>
-          <div className="chips">
-            {project.users.map((user: string) => (
-              <span key={user}>{user}</span>
-            ))}
-          </div>
-          <h2>筛选</h2>
-          <div className="chips muted">
-            {project.filters.map((filter: string) => (
-              <button key={filter}>{filter}</button>
-            ))}
-          </div>
-        </aside>
-
-        <section className="panel">
-          <div className="section-heading">
-            <div>
-              <p>{project.domain}</p>
-              <h2>记录字段</h2>
-            </div>
-            <button className="primary-action">新增记录</button>
-          </div>
-          <div className="field-grid">
-            {project.fields.map((field: string) => (
-              <label key={field}>
-                <span>{field}</span>
-                <input placeholder={"填写" + field} />
-              </label>
-            ))}
-          </div>
-        </section>
-      </section>
-
-      <section className="records panel">
-        <div className="section-heading">
-          <div>
-            <p>示例数据</p>
-            <h2>近期记录</h2>
-          </div>
-          <button>导出摘要</button>
+      {loadError && (
+        <div className="banner banner-danger">
+          <span>{loadError}</span>
+          <button
+            onClick={() => {
+              if (window.confirm("恢复为示例数据？损坏的本地数据将被覆盖。")) reset();
+            }}
+          >
+            恢复示例数据
+          </button>
         </div>
-        <div className="record-list">
-          {project.records.map((record: string[], index: number) => (
-            <article key={record.join("-")} className="record-card">
-              <div className="record-index">{String(index + 1).padStart(2, "0")}</div>
-              <div>
-                <h3>{record[0]}</h3>
-                <p>{record.slice(1).join(" · ")}</p>
-              </div>
-            </article>
-          ))}
+      )}
+      {error && (
+        <div className="banner banner-warn" onClick={dismissError}>
+          <span>{error}</span>
+          <button>知道了</button>
         </div>
+      )}
+
+      <MetricsBar ledger={ledger} nowIso={nowIso} />
+
+      <section className="workspace workspace-ledger">
+        <CaseList
+          ledger={ledger}
+          nowIso={nowIso}
+          selectedId={selectedId}
+          onSelect={setSelectedId}
+          onCreate={createCase}
+        />
+        {selectedId ? (
+          <CaseDetail
+            ledger={ledger}
+            caseId={selectedId}
+            nowIso={nowIso}
+            onCreateSession={(caseId, input) => createSession(caseId, input) !== null}
+            onAddAttempt={logAttempt}
+            onConfirmDowngrade={approveDowngrade}
+            onSavePlan={persistSafetyPlan}
+            onClose={close}
+          />
+        ) : (
+          <section className="panel detail-empty">
+            <h2>从左侧选择或新建一个个案</h2>
+          </section>
+        )}
       </section>
     </main>
   );
