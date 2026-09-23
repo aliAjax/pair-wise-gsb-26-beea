@@ -1,157 +1,217 @@
+import { useEffect, useMemo, useState } from "react";
 import "./styles.css";
+import type { LedgerState, RiskLevel, SessionDraft } from "./data/types";
+import {
+  addAttempt,
+  addCase,
+  addSession,
+  closeCase,
+  computeMetrics,
+  confirmDowngrade,
+  emptySessionDraft,
+  evaluateDowngrade,
+  openFollowUps,
+  reopenCase,
+  saveSafetyPlan,
+  sessionsOf,
+  type AttemptInput,
+  type PlanFields,
+} from "./domain/ledger";
+import { loadDrafts, loadLedger, saveDrafts, saveLedger } from "./storage/localStore";
+import { CaseList } from "./ui/CaseList";
+import { CaseDetail } from "./ui/CaseDetail";
+import { RISK_LABEL } from "./ui/format";
 
-const project = {
-  "id": "hxwl-12",
-  "port": 5112,
-  "title": "心理咨询个案记录",
-  "subtitle": "会谈时间线、风险等级与干预目标记录",
-  "stack": "React + Vite + TypeScript + CSS",
-  "theme": [
-    "#7c3aed",
-    "#0f766e",
-    "#f59e0b"
-  ],
-  "domain": "心理咨询",
-  "users": [
-    "咨询师",
-    "督导",
-    "机构管理员"
-  ],
-  "metrics": [
-    "活跃个案",
-    "高风险关注",
-    "本周会谈",
-    "目标推进"
-  ],
-  "filters": [
-    "焦虑",
-    "亲密关系",
-    "亲子",
-    "职业压力"
-  ],
-  "fields": [
-    "来访者代号",
-    "咨询主题",
-    "会谈日期",
-    "主要困扰",
-    "情绪状态",
-    "干预方法",
-    "下次目标"
-  ],
-  "records": [
-    [
-      "C-042",
-      "焦虑",
-      "中风险",
-      "睡眠改善，练习呼吸放松"
-    ],
-    [
-      "C-119",
-      "亲密关系",
-      "稳定",
-      "识别沟通中的回避模式"
-    ],
-    [
-      "C-203",
-      "职业压力",
-      "关注",
-      "设定下周边界练习"
-    ]
-  ]
-};
-
-const statusColors = ["status-ok", "status-watch", "status-danger"];
-
-function MetricCard({ label, value, index }: { label: string; value: string; index: number }) {
+function MetricCard({ label, value, alert, index }: { label: string; value: string; alert?: boolean; index: number }) {
+  const bar = ["status-ok", "status-watch", "status-danger", "status-ok"][index];
   return (
-    <article className="metric-card">
+    <article className={"metric-card" + (alert ? " alert" : "")}>
       <span>{label}</span>
       <strong>{value}</strong>
-      <i className={statusColors[index % statusColors.length]} />
+      <i className={alert ? "status-danger" : bar} />
     </article>
   );
 }
 
+function NewCaseForm({ onCreate }: { onCreate: (input: { alias: string; topic: string; level: RiskLevel }) => string[] }) {
+  const [alias, setAlias] = useState("");
+  const [topic, setTopic] = useState("");
+  const [level, setLevel] = useState<RiskLevel>("medium");
+  const [errors, setErrors] = useState<string[]>([]);
+
+  const submit = () => {
+    const errs = onCreate({ alias, topic, level });
+    if (errs.length === 0) {
+      setAlias("");
+      setTopic("");
+      setErrors([]);
+    } else {
+      setErrors(errs);
+    }
+  };
+
+  return (
+    <div className="new-case">
+      <h2>新建个案</h2>
+      {errors.length > 0 && (
+        <div className="error-box">
+          {errors.map((e) => (
+            <p key={e}>⚠ {e}</p>
+          ))}
+        </div>
+      )}
+      <input placeholder="来访者代号，如 C-301" value={alias} onChange={(e) => setAlias(e.target.value)} />
+      <input placeholder="咨询主题" value={topic} onChange={(e) => setTopic(e.target.value)} />
+      <select value={level} onChange={(e) => setLevel(e.target.value as RiskLevel)}>
+        <option value="low">{RISK_LABEL.low}</option>
+        <option value="medium">{RISK_LABEL.medium}</option>
+        <option value="high">{RISK_LABEL.high}</option>
+      </select>
+      <button className="primary-action" onClick={submit}>
+        建档
+      </button>
+    </div>
+  );
+}
+
 function App() {
-  const values = project.metrics.map((metric: string, index: number) => {
-    const base = [84, 12, 31, 7][index % 4];
-    return String(base + index * 3);
-  });
+  const [state, setState] = useState<LedgerState>(() => loadLedger());
+  const [drafts, setDrafts] = useState<Record<string, SessionDraft>>(() => loadDrafts());
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [now, setNow] = useState(() => new Date());
+
+  useEffect(() => saveLedger(state), [state]);
+  useEffect(() => saveDrafts(drafts), [drafts]);
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 30_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const selectedCase =
+    state.cases.find((c) => c.id === selectedId) ??
+    state.cases.find((c) => c.status === "active") ??
+    state.cases[0] ??
+    null;
+  const caseId = selectedCase?.id ?? "";
+
+  const metrics = useMemo(() => computeMetrics(state, now), [state, now]);
+  const open = useMemo(() => openFollowUps(state), [state]);
+  const caseSessions = useMemo(() => (caseId ? sessionsOf(state, caseId) : []), [state, caseId]);
+  const caseAttempts = state.attempts.filter((a) => a.caseId === caseId);
+  const casePlans = state.plans.filter((p) => p.caseId === caseId);
+  const caseAssessments = state.assessments.filter((a) => a.caseId === caseId);
+  const evaluation = useMemo(
+    () => (caseId ? evaluateDowngrade(state, caseId) : null),
+    [state, caseId],
+  );
+  const draft = drafts[caseId] ?? emptySessionDraft(caseId);
+
+  const patchDraft = (patch: Partial<SessionDraft>) =>
+    setDrafts((d) => ({ ...d, [caseId]: { ...emptySessionDraft(caseId), ...d[caseId], ...patch, caseId } }));
+
+  const submitSession = (): string[] => {
+    const result = addSession(state, draft, new Date());
+    if (result.errors.length > 0) return result.errors;
+    setState(result.state);
+    setDrafts((d) => ({ ...d, [caseId]: emptySessionDraft(caseId) }));
+    return [];
+  };
+
+  const addAttemptFor = (sessionId: string, input: AttemptInput) =>
+    setState((s) => addAttempt(s, sessionId, input, new Date()));
+
+  const savePlan = (fields: PlanFields, changeNote: string) =>
+    setState((s) => saveSafetyPlan(s, caseId, fields, changeNote, new Date()));
+
+  const confirmRiskDowngrade = (supervisor: string): string[] => {
+    const result = confirmDowngrade(state, caseId, supervisor, new Date());
+    if (result.errors.length > 0) return result.errors;
+    setState(result.state);
+    return [];
+  };
+
+  const closeSelected = (): string[] => {
+    const result = closeCase(state, caseId, new Date());
+    if (result.errors.length > 0) return result.errors;
+    setState(result.state);
+    return [];
+  };
+
+  const reopenSelected = () => setState((s) => reopenCase(s, caseId));
+
+  const createCase = (input: { alias: string; topic: string; level: RiskLevel }): string[] => {
+    const result = addCase(state, { ...input, counselor: "王咨询师" }, new Date());
+    if (result.errors.length > 0) return result.errors;
+    setState(result.state);
+    setSelectedId(result.caseId);
+    return [];
+  };
 
   return (
     <main className="app-shell">
       <section className="hero">
         <div>
-          <p className="eyebrow">{project.id} · port {project.port}</p>
-          <h1>{project.title}</h1>
-          <p className="subtitle">{project.subtitle}</p>
+          <p className="eyebrow">hxwl-12 · 危机跟进台账</p>
+          <h1>心理咨询个案记录</h1>
+          <p className="subtitle">
+            个案、风险会谈、联系尝试与安全计划串联入账：高风险留痕、失败顺延、连续两次低风险并经督导确认方可降级。
+          </p>
         </div>
         <div className="stack-card">
-          <span>技术栈</span>
-          <strong>{project.stack}</strong>
+          <span>分层实现</span>
+          <strong>资料 · 判断 · 本地保存 · 页面</strong>
         </div>
       </section>
 
       <section className="metrics-grid">
-        {project.metrics.map((metric: string, index: number) => (
-          <MetricCard key={metric} label={metric} value={values[index]} index={index} />
-        ))}
+        <MetricCard label="活跃个案" value={String(metrics.activeCases)} index={0} />
+        <MetricCard label="高风险关注" value={String(metrics.highRiskCases)} index={2} alert={metrics.highRiskCases > 0} />
+        <MetricCard label="本周会谈" value={String(metrics.weekSessions)} index={1} />
+        <MetricCard
+          label="待跟进（逾期）"
+          value={`${metrics.openFollowUps}（${metrics.overdueFollowUps}）`}
+          index={2}
+          alert={metrics.overdueFollowUps > 0}
+        />
       </section>
 
       <section className="workspace">
         <aside className="panel narrow">
-          <h2>角色</h2>
-          <div className="chips">
-            {project.users.map((user: string) => (
-              <span key={user}>{user}</span>
-            ))}
-          </div>
-          <h2>筛选</h2>
-          <div className="chips muted">
-            {project.filters.map((filter: string) => (
-              <button key={filter}>{filter}</button>
-            ))}
-          </div>
+          <h2>个案台账</h2>
+          <CaseList
+            cases={state.cases}
+            assessments={state.assessments}
+            openFollowUps={open}
+            selectedId={caseId}
+            onSelect={setSelectedId}
+          />
+          <NewCaseForm onCreate={createCase} />
         </aside>
 
-        <section className="panel">
-          <div className="section-heading">
-            <div>
-              <p>{project.domain}</p>
-              <h2>记录字段</h2>
-            </div>
-            <button className="primary-action">新增记录</button>
-          </div>
-          <div className="field-grid">
-            {project.fields.map((field: string) => (
-              <label key={field}>
-                <span>{field}</span>
-                <input placeholder={"填写" + field} />
-              </label>
-            ))}
-          </div>
+        <section className="panel detail-panel">
+          {selectedCase && evaluation ? (
+            <CaseDetail
+              key={selectedCase.id}
+              caseRecord={selectedCase}
+              sessions={caseSessions}
+              attempts={caseAttempts}
+              plans={casePlans}
+              assessments={caseAssessments}
+              draft={draft}
+              now={now}
+              evaluation={evaluation}
+              onDraftChange={patchDraft}
+              onSubmitSession={submitSession}
+              onAddAttempt={addAttemptFor}
+              onSavePlan={savePlan}
+              onConfirmDowngrade={confirmRiskDowngrade}
+              onClose={closeSelected}
+              onReopen={reopenSelected}
+            />
+          ) : (
+            <p className="empty-hint">暂无个案，请先建档。</p>
+          )}
         </section>
-      </section>
-
-      <section className="records panel">
-        <div className="section-heading">
-          <div>
-            <p>示例数据</p>
-            <h2>近期记录</h2>
-          </div>
-          <button>导出摘要</button>
-        </div>
-        <div className="record-list">
-          {project.records.map((record: string[], index: number) => (
-            <article key={record.join("-")} className="record-card">
-              <div className="record-index">{String(index + 1).padStart(2, "0")}</div>
-              <div>
-                <h3>{record[0]}</h3>
-                <p>{record.slice(1).join(" · ")}</p>
-              </div>
-            </article>
-          ))}
-        </div>
       </section>
     </main>
   );
